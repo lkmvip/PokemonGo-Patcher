@@ -42,26 +42,43 @@
 }
 %end
 
+%hook NSUserDefaults
+
+static BOOL useJapanese = NO;
+
++ (NSUserDefaults *)standardUserDefaults {
+    NSUserDefaults* defaults = %orig;
+
+    if (useJapanese == YES) {
+        [defaults setObject:@[@"ja"] forKey:@"AppleLanguages"];
+    }
+    else {
+        NSArray *languages = [defaults objectForKey:@"AppleLanguages"];
+        if ([[languages firstObject] isEqualToString:@"ja"] && languages.count == 1) {
+            [defaults removeObjectForKey:@"AppleLanguages"];
+        }
+    }
+    return defaults;
+}
+%end
 
 %hook CLLocation
 
 static float x = -1;
 static float y = -1;
+static float init_x = 0;
+static float init_y = 0;
 
 static NSMutableDictionary* plistDict = [[NSMutableDictionary alloc] initWithContentsOfFile:@"/var/mobile/Library/Preferences/tw.hiraku.pokemongo.plist"];
 
 - (CLLocationCoordinate2D) coordinate {
     CLLocationCoordinate2D position = %orig;
-
+    if ((init_x == 0 && init_y == 0) || init_x > 90 || init_x < -90 || init_y > 180 || init_y < -180) {
+        return position;
+    }
     if (x == -1 && y == -1) {
-        float init_x = plistDict[@"_init_x"] ? [plistDict[@"_init_x"] floatValue] : 37.7883923;
-        float init_y = plistDict[@"_init_y"] ? [plistDict[@"_init_y"] floatValue] : -122.4076413;
         BOOL applyNewLocation = plistDict[@"apply"] ? [plistDict[@"apply"] boolValue] : YES;
         if (applyNewLocation == YES) {
-            init_x = init_x > 90 ? 90 : init_x;
-            init_x = init_x < -90 ? -90 : init_x;
-            init_y = init_y > 180 ? 180 : init_y;
-            init_y = init_y < -180 ? -180 : init_y;
             x = position.latitude - init_x;
             y = position.longitude - init_y;
             plistDict[@"_offset_x"] = [NSNumber numberWithFloat:x];
@@ -74,6 +91,13 @@ static NSMutableDictionary* plistDict = [[NSMutableDictionary alloc] initWithCon
 }
 %end
 
+%group POKEPPHook
+%hook UIImage
++ (UIImage *)add_imageNamed:(NSString *)name tintColor:(UIColor *)color style:(int)style {
+    return [UIImage imageNamed:[NSString stringWithFormat:@"orig_%@",name]];
+}
+%end
+%end
 
 //Implement printf to print logs...
 int printf(const char * __restrict format, ...)
@@ -112,7 +136,7 @@ int new_lstat(const char *path, struct stat *buf) {
 %ctor {
 
     if(![[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/Library/Preferences/tw.hiraku.pokemongo.plist"]) { 
-        NSDictionary *plistDict = @{@"_init_x":@37.7883923,@"_init_y":@-122.4076413};
+        NSDictionary *plistDict = @{@"_init_x":@0,@"_init_y":@0};
         [plistDict writeToFile:@"/var/mobile/Library/Preferences/tw.hiraku.pokemongo.plist" atomically:NO];
     }
     else {
@@ -124,9 +148,20 @@ int new_lstat(const char *path, struct stat *buf) {
         if (plistDict[@"_offset_y"]) {
             y = [plistDict[@"_offset_y"] floatValue];
         };
+        init_x = plistDict[@"_init_x"] ? [plistDict[@"_init_x"] floatValue] : 0;
+        init_y = plistDict[@"_init_y"] ? [plistDict[@"_init_y"] floatValue] : 0;
+
+        if (plistDict[@"setJapanese"]) {
+            useJapanese = [plistDict[@"setJapanese"] boolValue];
+        };
+
+        if ([plistDict[@"showOrigImageInPokePP"] boolValue] == YES && [[NSFileManager defaultManager] fileExistsAtPath:@"/var/ua_tweak_resources/PokeGoPP/APResources.bundle/orig_1.png"]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 0.1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ %init(POKEPPHook) });
+        }
     }
 
     %init;
+    
     MSHookFunction((void *)fopen, (void *)new_fopen, (void **)&orig_fopen);
     MSHookFunction((void *)stat, (void *)new_stat, (void **)&orig_stat);
     MSHookFunction((void *)lstat, (void *)new_lstat, (void **)&orig_lstat);
